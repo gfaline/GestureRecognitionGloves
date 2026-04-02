@@ -1,0 +1,67 @@
+ALbert
+
+window 25, step 10, only normed, majority window, regression
+Suspiciously accurate, I don't trust it.
+Total Samples: 567
+
+Per-label performance:
+Label 1.0: 54/54 (1.000)
+Label 2.0: 42/42 (1.000)
+Label 3.0: 84/84 (1.000)
+Label 4.0: 64/64 (1.000)
+Label 5.0: 54/54 (1.000)
+Label 6.0: 56/56 (1.000)
+Label 7.0: 74/74 (1.000)
+Label 8.0: 59/59 (1.000)
+Label 9.0: 80/80 (1.000)
+
+
+window 25, step 10, only normed, majority window, forest
+Total Samples: 1404
+
+Per-label performance:
+Label 1.0: 117/117 (1.000)
+Label 2.0: 113/113 (1.000)
+Label 3.0: 202/202 (1.000)
+Label 4.0: 149/149 (1.000)
+Label 5.0: 123/123 (1.000)
+Label 6.0: 138/138 (1.000)
+Label 7.0: 183/183 (1.000)
+Label 8.0: 139/139 (1.000)
+Label 9.0: 240/240 (1.000)
+
+window 25, step 10, only normed, majority window (forced smaller), forest
+Total Samples: 692
+
+Per-label performance:
+Label 1.0: 76/76 (1.000)
+Label 2.0: 81/81 (1.000)
+Label 3.0: 80/80 (1.000)
+Label 4.0: 67/67 (1.000)
+Label 5.0: 98/98 (1.000)
+Label 6.0: 58/58 (1.000)
+Label 7.0: 61/62 (0.984)
+Label 8.0: 84/84 (1.000)
+Label 9.0: 86/86 (1.000)
+
+_______________Added confidence thresholding and false positives_________________
+
+window 30, step 5, only normed, majority window (forced smaller), forest
+Total Samples: 257
+
+Per-label performance:
+Label 0: 0/5 (0.000)
+Label 1.0: 30/30 (1.000)
+Label 2.0: 29/29 (1.000)
+Label 3.0: 21/21 (1.000)
+Label 4.0: 37/37 (1.000)
+Label 5.0: 43/43 (1.000)
+Label 6.0: 22/22 (1.000)
+Label 7.0: 27/27 (1.000)
+Label 8.0: 20/20 (1.000)
+Label 9.0: 23/23 (1.000)
+
+False Positive Metrics:
+Noise windows: 5
+False positives: 5
+False positive rate: 1.000

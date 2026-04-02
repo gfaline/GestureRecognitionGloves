@@ -2,20 +2,21 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import classification_report
+
 import joblib
 import numpy as np
 import pandas as pd
 
-df = pd.read_csv("filtered_button_not_zero.csv", comment='#')
+df = pd.read_csv("albert_filtered.csv", comment='#')
 
 # Separate features and labels
-#X = df.drop(columns=["gestureID", "Button", "time_ms"]).values
-X = df.drop(columns=["gestureID", "Button", "time_ms", "raw0", "raw1", "raw2", "raw3", "raw4"]).values
-y = df["gestureID"].values
-print(df["gestureID"].value_counts())
+df = df[df["active"] != 0]
+X = df.drop(columns=["active", "timestamp_ms", "gestureDetected", "gestureTarget"]).values
+y = df["gestureTarget"].values
+print(df["gestureTarget"].value_counts())
 
-WINDOW_SIZE = 25
-STEP_SIZE = 10
+WINDOW_SIZE = 30
+STEP_SIZE = 5
 
 
 def create_windows_strict(X, y, window_size, step):

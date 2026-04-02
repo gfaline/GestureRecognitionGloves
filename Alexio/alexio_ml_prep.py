@@ -100,10 +100,10 @@ print(classification_report(winy_test, win_y_pred))
 win_y_pred = win_forest_model.predict(winX_test)
 print(classification_report(winy_test, win_y_pred))
 
-joblib.dump(scaler, "alb_line_gesture_scaler1.pkl")
-joblib.dump(winscaler, "alb_win_gesture_scaler1.pkl")
+joblib.dump(scaler, "alex_line_gesture_scaler1.pkl")
+joblib.dump(winscaler, "alex_win_gesture_scaler1.pkl")
 
-joblib.dump(line_reg_model, "alb_line_regression_gesture_model1.pkl")
+joblib.dump(line_reg_model, "alex_line_regression_gesture_model1.pkl")
 
-joblib.dump(win_reg_model, "alb_win_regression_gesture_model1.pkl")
-joblib.dump(win_reg_model, "alb_win_forest_gesture_model1.pkl")
+joblib.dump(win_reg_model, "alex_win_regression_gesture_model1.pkl")
+joblib.dump(win_reg_model, "alex_win_forest_gesture_model1.pkl")
