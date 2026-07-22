@@ -8,8 +8,8 @@ from collections import deque, defaultdict
 # =========================
 # CONFIG
 # =========================
-WINDOW_SIZE = 25
-STRIDE = 10
+WINDOW_SIZE = 20
+STRIDE = 5
 THRESHOLD = 0.7
 IDLE_CLASS = 0
 
@@ -291,11 +291,11 @@ class ModelTester:
 # MAIN LOOP
 # =========================
 if __name__ == "__main__":
-    streamer = RealtimeSensorStreamer("CSV log 1.txt")
+    streamer = RealtimeSensorStreamer("Alexio/new_glove_data.txt")
     window = SlidingWindow(WINDOW_SIZE, STRIDE)
 
-    scaler_filename = 'alex_win_gesture_scaler1.pkl'
-    model_filename = 'alex_win_regression_gesture_model1.pkl'
+    scaler_filename = 'Alexio/win_gesture_scaler1.pkl'
+    model_filename = 'Alexio/0_win_regression_gesture_model1.pkl'
     try:
         scaler = joblib.load(scaler_filename)
         print(f"Scaler '{scaler_filename}' loaded successfully.")

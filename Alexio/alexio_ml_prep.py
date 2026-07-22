@@ -6,17 +6,26 @@ import joblib
 import numpy as np
 import pandas as pd
 
-df = pd.read_csv("filtered_button_not_zero.csv", comment='#')
+IDLE_CLASS = 0
+df = pd.read_csv("Alexio/new_glove_data.txt", comment='#')
 
 # Separate features and labels
 #X = df.drop(columns=["gestureID", "Button", "time_ms"]).values
+
+#Change all button == 0 to gesture idle
+df.loc[df['Button'] == 0, 'gestureID'] = IDLE_CLASS
+#Remove most of the 0s
+zeros = df[df['gestureID'] == IDLE_CLASS].sample(n=350)
+#drop all rows where button is 0, add a handful of 0s back
+df = df[df['Button'] == 1]
+df = pd.concat([df, zeros])
+
 X = df.drop(columns=["gestureID", "Button", "time_ms", "raw0", "raw1", "raw2", "raw3", "raw4"]).values
 y = df["gestureID"].values
 print(df["gestureID"].value_counts())
 
-WINDOW_SIZE = 25
-STEP_SIZE = 10
-
+WINDOW_SIZE = 20
+STEP_SIZE = 5
 
 def create_windows_strict(X, y, window_size, step):
     Xw, yw = [], []
@@ -57,17 +66,17 @@ Xw, yw = create_windows_majority(X, y, WINDOW_SIZE, STEP_SIZE)
 
 print("Windowed shape:", Xw.shape)
 
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42, stratify=y
-)
+#X_train, X_test, y_train, y_test = train_test_split(
+#    X, y, test_size=0.2, random_state=42, stratify=y
+#)
 
 winX_train, winX_test, winy_train, winy_test = train_test_split(
     Xw, yw, test_size=0.2, random_state=42, stratify=yw
 )
 
-scaler = StandardScaler()
-X_train = scaler.fit_transform(X_train)
-X_test = scaler.transform(X_test)
+#scaler = StandardScaler()
+#X_train = scaler.fit_transform(X_train)
+#X_test = scaler.transform(X_test)
 
 winscaler = StandardScaler()
 winX_train = winscaler.fit_transform(winX_train)
@@ -75,8 +84,8 @@ winX_test = winscaler.transform(winX_test)
 
 from sklearn.linear_model import LogisticRegression
 
-line_reg_model = LogisticRegression(max_iter=1000)
-line_reg_model.fit(X_train, y_train)
+#line_reg_model = LogisticRegression(max_iter=1000)
+#line_reg_model.fit(X_train, y_train)
 
 win_reg_model = LogisticRegression(max_iter=1000)
 win_reg_model.fit(winX_train, winy_train)
@@ -91,8 +100,8 @@ win_forest_model = RandomForestClassifier(
 win_forest_model.fit(winX_train, winy_train)
 
 #Testing reports
-y_pred = line_reg_model.predict(X_test)
-print(classification_report(y_test, y_pred))
+#y_pred = line_reg_model.predict(X_test)
+#print(classification_report(y_test, y_pred))
 
 win_y_pred = win_reg_model.predict(winX_test)
 print(classification_report(winy_test, win_y_pred))
@@ -100,10 +109,10 @@ print(classification_report(winy_test, win_y_pred))
 win_y_pred = win_forest_model.predict(winX_test)
 print(classification_report(winy_test, win_y_pred))
 
-joblib.dump(scaler, "alex_line_gesture_scaler1.pkl")
-joblib.dump(winscaler, "alex_win_gesture_scaler1.pkl")
+#joblib.dump(scaler, "alex_line_gesture_scaler1.pkl")
+joblib.dump(winscaler, "Alexio/win_gesture_scaler1.pkl")
 
-joblib.dump(line_reg_model, "alex_line_regression_gesture_model1.pkl")
+#joblib.dump(line_reg_model, "alex_line_regression_gesture_model1.pkl")
 
-joblib.dump(win_reg_model, "alex_win_regression_gesture_model1.pkl")
-joblib.dump(win_reg_model, "alex_win_forest_gesture_model1.pkl")
+joblib.dump(win_reg_model, "Alexio/0_win_regression_gesture_model1.pkl")
+joblib.dump(win_reg_model, "Alexio/0_win_forest_gesture_model1.pkl")

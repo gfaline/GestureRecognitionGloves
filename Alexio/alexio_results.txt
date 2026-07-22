@@ -1,0 +1,102 @@
+
+window 25, step 10, only normed, majority window, regression
+Overall Accuracy: 0.047
+Total Samples: 1653
+
+Per-label performance:
+Label 0: 0/8 (0.000)
+Label 1.0: 11/150 (0.073)
+Label 2.0: 0/135 (0.000)
+Label 3.0: 25/132 (0.189)
+Label 4.0: 0/89 (0.000)
+Label 5.0: 0/137 (0.000)
+Label 6.0: 0/81 (0.000)
+Label 7.0: 0/138 (0.000)
+Label 8.0: 0/121 (0.000)
+Label 9.0: 8/78 (0.103)
+Label 10.0: 34/129 (0.264)
+Label 11.0: 0/107 (0.000)
+Label 12.0: 0/128 (0.000)
+Label 13.0: 0/220 (0.000)
+
+False Positive Metrics:
+Noise windows: 8
+False positives: 8
+False positive rate: 1.000
+
+
+window 25, step 10, only normed, majority window, forest
+Overall Accuracy: 0.030
+Total Samples: 5744
+
+Per-label performance:
+Label 0: 0/32 (0.000)
+Label 1.0: 2/590 (0.003)
+Label 2.0: 26/431 (0.060)
+Label 3.0: 18/472 (0.038)
+Label 4.0: 0/299 (0.000)
+Label 5.0: 0/402 (0.000)
+Label 6.0: 0/256 (0.000)
+Label 7.0: 0/481 (0.000)
+Label 8.0: 0/415 (0.000)
+Label 9.0: 25/431 (0.058)
+Label 10.0: 103/402 (0.256)
+Label 11.0: 0/446 (0.000)
+Label 12.0: 0/461 (0.000)
+Label 13.0: 0/626 (0.000)
+
+False Positive Metrics:
+Noise windows: 32
+False positives: 32
+False positive rate: 1.000
+
+
+window 20, step 10, only normed, majority window, forest
+Overall Accuracy: 0.106
+Total Samples: 8916
+
+Per-label performance:
+Label 0: 0/35 (0.000)
+Label 1.0: 0/881 (0.000)
+Label 2.0: 538/642 (0.838)
+Label 3.0: 0/739 (0.000)
+Label 4.0: 0/446 (0.000)
+Label 5.0: 8/660 (0.012)
+Label 6.0: 164/463 (0.354)
+Label 7.0: 41/641 (0.064)
+Label 8.0: 1/729 (0.001)
+Label 9.0: 182/694 (0.262)
+Label 10.0: 0/625 (0.000)
+Label 11.0: 0/633 (0.000)
+Label 12.0: 0/625 (0.000)
+Label 13.0: 8/1103 (0.007)
+
+False Positive Metrics:
+Noise windows: 35
+False positives: 35
+False positive rate: 1.000
+
+window 20, step 10, only normed, majority window, regression
+Overall Accuracy: 0.098
+Total Samples: 8566
+
+Per-label performance:
+Label 0: 0/55 (0.000)
+Label 1.0: 0/885 (0.000)
+Label 2.0: 291/589 (0.494)
+Label 3.0: 0/579 (0.000)
+Label 4.0: 0/420 (0.000)
+Label 5.0: 1/653 (0.002)
+Label 6.0: 227/459 (0.495)
+Label 7.0: 47/640 (0.073)
+Label 8.0: 142/641 (0.222)
+Label 9.0: 112/599 (0.187)
+Label 10.0: 0/664 (0.000)
+Label 11.0: 0/661 (0.000)
+Label 12.0: 0/633 (0.000)
+Label 13.0: 18/1088 (0.017)
+
+False Positive Metrics:
+Noise windows: 55
+False positives: 55
+False positive rate: 1.000
