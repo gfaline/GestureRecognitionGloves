@@ -1,4 +1,4 @@
-#include <mpu6050.h>
+#include "mpu6050.h"
 
 #define MPU_ADDRESS 0x68  // 0x69 if AD0 is high
 
@@ -26,7 +26,10 @@ int sensor1;  // A1
 int sensor2;  // A2
 int sensor3;  // A3
 int sensor4;  // A4
-int button = A8;
+
+// "Button" logged in CSV — toggled only by the 'b' key in Serial Monitor,
+// no physical button wired in.
+bool button = false;
 
 // EMA filtered values
 float f0 = 0, f1 = 0, f2 = 0, f3 = 0, f4 = 0;
@@ -40,6 +43,20 @@ float flexNorm[5] = {0, 0, 0, 0, 0};
 bool minCalibrated = false;
 bool maxCalibrated = false;
 
+// ---------------- Orientation reference ----------------
+// Unit gravity vector captured during 'c' with the hand held open and flat,
+// BACK OF THE HAND FACING UP (palm facing down). That pose is defined as "up";
+// everything downstream reports orientation relative to it.
+float upRefX = 0, upRefY = 1, upRefZ = 0;
+bool  orientCalibrated = false;
+
+// Which way the hand is currently facing, relative to the calibrated pose.
+// Refreshed every loop() by updateFacing(); read freely by any function.
+enum Facing_t { FACE_UNKNOWN, FACE_UP, FACE_DOWN, FACE_LEFT, FACE_RIGHT,
+                FACE_FORWARD, FACE_BACK };
+Facing_t handFacing      = FACE_UNKNOWN;
+float    handFacingAngle = 0;   // degrees away from the calibrated "up" pose
+
 // ---------------- Operating mode ----------------
 // DETECT = gesture recognition; LOG = CSV output
 enum Mode { MODE_DETECT, MODE_LOG };
@@ -47,7 +64,6 @@ Mode currentMode = MODE_DETECT;
 
 // ---------------- Data logging (LOG mode) ----------------
 int gestureID = 0;
-bool softButton = false;         // toggled by 'b' key in Serial Monitor
 unsigned long logStartMs    = 0;
 unsigned long lastLogUs     = 0;
 unsigned long sampleHz      = 50;
@@ -65,6 +81,21 @@ enum GestureID_t { G_NONE, G_OK, G_GUN, G_STOP, G_UP, G_DOWN, G_BLINK,
                    G_LOOK, G_PHOTO, G_COOL, G_CUT, G_ROCK, G_PROBLEM, G_POINT };
 GestureID_t activeGesture = G_NONE;
 
+// Static vs dynamic classification.
+//   static  = recognized from finger pose + orientation (handleDetect)
+//   dynamic = recognized from hand motion              (handleDynamic)
+bool isDynamicGesture(GestureID_t g) {
+  return (g == G_PROBLEM);
+}
+// true when the most recently recognized gesture was a dynamic one
+bool gestureDynamic = false;
+
+// "No gesture recognized" state.
+// Stays true from startup / from the moment the hand returns to neutral,
+// until any gesture is recognized. "GESTURE: None" is printed once on the
+// transition back to this state.
+bool noGesture = true;
+
 // ---------------- Stop / Blink thresholds ----------------
 // Stop  = fist held for 500 ms (single hold)
 // Blink = fist held for 250 ms, released, then held 250 ms again within window
@@ -75,17 +106,55 @@ const unsigned long BLINK_WINDOW_MS = 1500;  // window to land both taps in
 int           blinkTaps      = 0;   // number of valid short holds counted
 unsigned long firstTapMs     = 0;   // time of first blink tap
 
-// ---------------- Problem shake tracking ----------------
-// Flat hand (stop pose) rocked side to side — gForceAY oscillates +/-
-// Swing range: ~-0.8 to ~+0.8
-const float   SHAKE_HIGH        =  0.50;  // AY above this = rocked one way
-const float   SHAKE_LOW         = -0.50;  // AY below this = rocked other way
-const int     SHAKE_ROCKS_NEEDED = 4;     // threshold crossings needed (2 full rocks)
-const unsigned long SHAKE_WINDOW_MS = 2000;
+// ============================================================
+// Motion analysis  (feeds DYNAMIC gesture recognition)
+//
+// Static and dynamic detection run every loop() in parallel:
+//   - handleDetect()  : finger pose + orientation, needs a still hand
+//   - handleDynamic() : gestures made by MOVING the hand
+//
+// A "dynamic window" is open (dynamicWindow == true) only when ALL of:
+//   * the IMU shows significant rotation            (gyroMag > MOTION_GYRO_ON_DPS)
+//   * that rotation reverses direction repeatedly   (back-and-forth wave)
+//   * the finger pose stays roughly constant        (poseSteady)
+// While the hand is moving, static dwell is frozen so a wave is not
+// misread as a static pose.
+// ============================================================
+const float         MOTION_GYRO_ON_DPS    = 90.0;   // |gyro| to enter "moving"
+const float         MOTION_GYRO_OFF_DPS   = 45.0;   // |gyro| to leave "moving" (hysteresis)
+const float         REVERSAL_HYST_DPS     = 35.0;   // dead-band for counting direction flips
+const int           REVERSALS_FOR_DYNAMIC = 3;      // flips inside the window => "repeated"
+const unsigned long MOTION_WINDOW_MS      = 1500;   // span the flips must fit within
+const float         POSE_DRIFT_TOL        = 0.20;   // max flexNorm wobble to stay "same pose"
+const unsigned long POSE_STEADY_MIN_MS    = 200;    // pose must be steady at least this long
 
-int           shakeCount     = 0;   // number of threshold crossings so far
-int           shakeDir       = 0;   // last crossing direction: +1 or -1
-unsigned long shakeStartMs   = 0;   // time of first crossing
+// live motion state, refreshed by updateMotion()
+float gyroMag       = 0;       // |gyro| magnitude, dps
+int   motionAxis    = 0;       // dominant rotation axis: 0=X 1=Y 2=Z
+bool  motionActive  = false;   // significant sustained rotation right now
+bool  poseSteady    = false;   // fingers ~constant recently
+bool  dynamicWindow = false;   // motionActive && poseSteady && repeated pattern
+bool  dynAnnounced  = false;   // last-printed search mode (false = static)
+
+// internals
+float         flexBaseline[5]    = {0, 0, 0, 0, 0};   // slow EMA of the pose
+unsigned long poseSteadySinceMs  = 0;
+const int     REV_RING           = 6;
+unsigned long revTimes[REV_RING] = {0};
+int           revHead            = 0;
+int           revFill            = 0;
+int           revDir             = 0;
+
+// ---------------- Problem (dynamic gesture) ----------------
+// Flat / open hand waved back and forth.
+const int     PROBLEM_ROCKS_NEEDED = 4;      // gForceAY sign flips needed
+const float   PROBLEM_AY_HIGH      =  0.40;
+const float   PROBLEM_AY_LOW       = -0.40;
+const unsigned long PROBLEM_WINDOW_MS = 2000;
+
+int           problemRocks   = 0;
+int           problemDir     = 0;
+unsigned long problemStartMs = 0;
 
 // ---------------- UI/status ----------------
 unsigned long lastStatusMs = 0;
@@ -126,17 +195,33 @@ void readFiltered() {
 // Calibrate relaxed hand (minimum values)   Command: c
 // ============================================================
 void calibrateRelaxed() {
-  Serial.println("# Calibrating relaxed hand - keep hand relaxed and still...");
+  Serial.println("# Calibrating relaxed hand - hold hand OPEN and FLAT, back of hand facing up (palm down), keep still...");
 
-  float sum[5] = {0, 0, 0, 0, 0};
+  wakeSensor(MPU_ADDRESS);
+
+  float sum[5]  = {0, 0, 0, 0, 0};
+  float gSum[3] = {0, 0, 0};
   for (int i = 0; i < 200; i++) {
     readFiltered();
     sum[0] += sensor;  sum[1] += sensor1;
     sum[2] += sensor2; sum[3] += sensor3;
     sum[4] += sensor4;
+
+    // Sample gravity for the orientation reference
+    readAccelData(MPU_ADDRESS, rawAX, rawAY, rawAZ);
+    rawAccelToGForce(rawAX, rawAY, rawAZ, gForceAX, gForceAY, gForceAZ);
+    gSum[0] += gForceAX; gSum[1] += gForceAY; gSum[2] += gForceAZ;
+
     delay(5);
   }
   for (int i = 0; i < 5; i++) flexMin[i] = sum[i] / 200.0;
+
+  // Store the mean gravity vector as a unit vector = "hand facing up"
+  float gx = gSum[0] / 200.0, gy = gSum[1] / 200.0, gz = gSum[2] / 200.0;
+  float mag = sqrt(gx * gx + gy * gy + gz * gz);
+  if (mag < 0.1) mag = 1.0;
+  upRefX = gx / mag; upRefY = gy / mag; upRefZ = gz / mag;
+  orientCalibrated = true;
 
   minCalibrated = true;
   Serial.print("# Relaxed calibration complete. Min: ");
@@ -145,6 +230,10 @@ void calibrateRelaxed() {
     if (i < 4) Serial.print(", ");
   }
   Serial.println();
+  Serial.print("# Up reference (g): ");
+  Serial.print(upRefX, 3); Serial.print(", ");
+  Serial.print(upRefY, 3); Serial.print(", ");
+  Serial.println(upRefZ, 3);
 }
 
 // ============================================================
@@ -238,35 +327,42 @@ bool gestureFlatHand() {
           flexNorm[4] < 0.50);
 }
 
-bool gestureUp() {
-  // thumb extended, other four fingers curled, hand tilted up
+// Thumb extended, other four fingers curled (thumb-up hand shape).
+// Shared by Up and Down; hand orientation tells them apart:
+//   Up   = hand facing right
+//   Down = hand facing left
+bool thumbOnlyPose() {
   return (flexNorm[0] < 0.30 &&   // thumb extended
           flexNorm[1] > 0.60 &&   // index curled
           flexNorm[2] > 0.60 &&   // middle curled
           flexNorm[3] > 0.60 &&   // ring curled
-          flexNorm[4] > 0.60 &&   // pinky curled
-          gForceAY > 0.85);
+          flexNorm[4] > 0.60);    // pinky curled
+}
+
+bool gestureUp() {
+  return (thumbOnlyPose() && handFacing == FACE_RIGHT);
 }
 
 bool gestureDown() {
-  // same hand shape, tilted down
-  return (flexNorm[0] < 0.30 &&
-          flexNorm[1] > 0.60 &&
-          flexNorm[2] > 0.60 &&
-          flexNorm[3] > 0.60 &&
-          flexNorm[4] > 0.60 &&
-          gForceAY < -0.4);
+  return (thumbOnlyPose() && handFacing == FACE_LEFT);
+}
+
+// Index + middle extended, ring + pinky curled, thumb tucked — the same
+// finger pose is shared by Look and Cut; hand orientation tells them apart:
+//   Look = hand NOT facing left or right
+//   Cut  = hand facing left or right
+bool twoFingerPose() {
+  return (flexNorm[0] > 0.55 &&   // thumb curled
+          flexNorm[1] < 0.6 &&    // index straight
+          flexNorm[2] < 0.8 &&    // middle straight
+          flexNorm[3] > 0.75 &&   // ring curled
+          flexNorm[4] > 0.7);     // pinky curled
 }
 
 bool gestureLook() {
-  // Index + middle extended (like a V pointing away), others curled, thumb tucked
-  // "Look at me" / peace sign directed outward
-  return (flexNorm[0] > 0.55 &&   // thumb curled
-          flexNorm[1] < 0.6 &&   // index straight
-          flexNorm[2] < 0.8 &&   // middle straight
-          flexNorm[3] > 0.75 &&   // ring curled
-          flexNorm[4] > 0.7 &&
-          gForceAX > 0.60);    // pinky curled
+  return (twoFingerPose() &&
+          handFacing != FACE_LEFT &&
+          handFacing != FACE_RIGHT);
 }
 
 bool gesturePhoto() {
@@ -289,16 +385,10 @@ bool gestureCool() {
 }
 
 bool gestureCut() {
-  // Index + middle extended and together (scissors), thumb/ring/pinky curled
-  return (flexNorm[0] > 0.55 &&   // thumb curled
-          flexNorm[1] < 0.6 &&   // index straight
-          flexNorm[2] < 0.8 &&   // middle straight
-          flexNorm[3] > 0.75 &&   // ring curled
-          flexNorm[4] > 0.7 &&
-          gForceAX > -0.100 && gForceAX < 0.150);
-  // Note: Cut and Look use the same finger pose — distinguish them by
-  // orienting the hand differently (e.g. palm facing self vs outward)
-  // and adding a gForce condition once you know your axis values.
+  // Same finger pose as Look (scissors); recognized when the hand is
+  // turned to face left or right.
+  return (twoFingerPose() &&
+          (handFacing == FACE_LEFT || handFacing == FACE_RIGHT));
 }
 
 bool gestureRock() {
@@ -331,6 +421,124 @@ void printNorm() {
   Serial.print("  gX="); Serial.print(gForceAX, 3);
   Serial.print("  gY="); Serial.print(gForceAY, 3);
   Serial.print("  gZ="); Serial.println(gForceAZ, 3);
+
+  Serial.print("# motion: looking=");
+  Serial.print(dynamicWindow ? "dynamic" : "static");
+  Serial.print("  gyroMag="); Serial.print(gyroMag, 0);
+  Serial.print("  moving=");   Serial.print(motionActive);
+  Serial.print("  poseSteady="); Serial.print(poseSteady);
+  Serial.print("  reversals="); Serial.println(revFill);
+}
+
+// ============================================================
+// Track which way the hand is facing, relative to the pose held during 'c'
+// calibration — hand open and flat with the back of the hand facing up
+// (palm down). That pose is defined as "up".
+//
+// Builds an orthonormal frame from the calibrated up-vector, projects the
+// current gravity direction onto it, and picks the dominant axis. Called
+// every loop() so handFacing / handFacingAngle are always current.
+// ============================================================
+void updateFacing() {
+  if (!orientCalibrated) {
+    handFacing      = FACE_UNKNOWN;
+    handFacingAngle = 0;
+    return;
+  }
+
+  // Current gravity as a unit vector
+  float m = sqrt(gForceAX * gForceAX + gForceAY * gForceAY + gForceAZ * gForceAZ);
+  if (m < 0.1) m = 1.0;
+  float gx = gForceAX / m, gy = gForceAY / m, gz = gForceAZ / m;
+
+  // up = calibrated reference axis
+  float ux = upRefX, uy = upRefY, uz = upRefZ;
+
+  // Helper axis least parallel to up, then Gram-Schmidt for right / forward
+  float hx = 0, hy = 0, hz = 1;
+  if (fabs(uz) > 0.9) { hx = 1; hy = 0; hz = 0; }
+
+  // right = up x helper  (normalized)
+  float rx = uy * hz - uz * hy;
+  float ry = uz * hx - ux * hz;
+  float rz = ux * hy - uy * hx;
+  float rm = sqrt(rx * rx + ry * ry + rz * rz);
+  if (rm < 1e-3) rm = 1.0;
+  rx /= rm; ry /= rm; rz /= rm;
+
+  // forward = right x up
+  float fx = ry * uz - rz * uy;
+  float fy = rz * ux - rx * uz;
+  float fz = rx * uy - ry * ux;
+
+  // Components of current gravity in the calibrated frame
+  float cu = gx * ux + gy * uy + gz * uz;   // +up  / -down
+  float cr = gx * rx + gy * ry + gz * rz;   // +right / -left
+  float cf = gx * fx + gy * fy + gz * fz;   // +forward / -back
+
+  float au = fabs(cu), ar = fabs(cr), af = fabs(cf);
+
+  if      (au >= ar && au >= af) handFacing = (cu >= 0) ? FACE_UP      : FACE_DOWN;
+  else if (ar >= af)             handFacing = (cr >= 0) ? FACE_RIGHT   : FACE_LEFT;
+  else                           handFacing = (cf >= 0) ? FACE_FORWARD : FACE_BACK;
+
+  handFacingAngle = degrees(acos(constrain(cu, -1.0, 1.0)));
+}
+
+const char *facingLabel() {
+  switch (handFacing) {
+    case FACE_UP:      return "up";
+    case FACE_DOWN:    return "down";
+    case FACE_LEFT:    return "left";
+    case FACE_RIGHT:   return "right";
+    case FACE_FORWARD: return "forward";
+    case FACE_BACK:    return "back";
+    default:           return "unknown";
+  }
+}
+
+void printFacing() {
+  if (handFacing == FACE_UNKNOWN) {
+    Serial.println("FACING: unknown (run c to calibrate orientation)");
+    return;
+  }
+  Serial.print("FACING: ");
+  Serial.print(facingLabel());
+  Serial.print("  (");
+  Serial.print(handFacingAngle, 0);
+  Serial.println(" deg from calibrated up)");
+}
+
+const char *gestureName(GestureID_t g) {
+  switch (g) {
+    case G_OK:      return "OK";
+    case G_GUN:     return "Gun";
+    case G_STOP:    return "Stop";
+    case G_UP:      return "Up";
+    case G_DOWN:    return "Down";
+    case G_BLINK:   return "Blink";
+    case G_LOOK:    return "Look";
+    case G_PHOTO:   return "Photo";
+    case G_COOL:    return "Cool";
+    case G_CUT:     return "Cut";
+    case G_ROCK:    return "Rock";
+    case G_PROBLEM: return "Problem";
+    case G_POINT:   return "Point";
+    default:        return "None";
+  }
+}
+
+// Single place every recognized gesture is reported.
+// Sets the static/dynamic flag, clears the idle state, prints the gesture
+// line (tagged static/dynamic), the normalized values, and the facing.
+void announceGesture(GestureID_t id) {
+  gestureDynamic = isDynamicGesture(id);
+  noGesture      = false;
+  Serial.print("GESTURE: ");
+  Serial.print(gestureName(id));
+  Serial.println(gestureDynamic ? "  (dynamic)" : "  (static)");
+  printNorm();
+  printFacing();
 }
 
 // ============================================================
@@ -374,47 +582,116 @@ void updateMotor() {
 }
 
 // ============================================================
-// Problem shake tracker — runs every loop() independently of
-// the latch state machine so it can accumulate crossings freely.
-// Fires GESTURE: Problem and resets when enough rocks detected.
+// Motion analysis — runs every loop(). Decides whether the hand is
+// being moved in a repeated back-and-forth pattern with a steady pose,
+// i.e. whether a DYNAMIC gesture should be attempted.
 // ============================================================
-void updateShake() {
-  // Looser flat-hand check than gestureStop() — fingers just need to be
-  // mostly extended, not perfectly, since shaking causes some flex noise
-  bool flatHand = gestureFlatHand();
+void updateMotion() {
+  unsigned long now = millis();
 
-  if (!flatHand) {
-    shakeCount   = 0;
-    shakeDir     = 0;
-    shakeStartMs = 0;
+  // --- significant rotation, with hysteresis ---
+  gyroMag = sqrt(dpsGX * dpsGX + dpsGY * dpsGY + dpsGZ * dpsGZ);
+  if (!motionActive && gyroMag > MOTION_GYRO_ON_DPS)  motionActive = true;
+  if ( motionActive && gyroMag < MOTION_GYRO_OFF_DPS) motionActive = false;
+
+  // --- dominant rotation axis (largest instantaneous rate) ---
+  float mx = fabs(dpsGX), my = fabs(dpsGY), mz = fabs(dpsGZ);
+  if      (mx >= my && mx >= mz) motionAxis = 0;
+  else if (my >= mz)             motionAxis = 1;
+  else                           motionAxis = 2;
+  float axisRate = (motionAxis == 0) ? dpsGX : (motionAxis == 1) ? dpsGY : dpsGZ;
+
+  // --- count back-and-forth reversals on that axis (ring of timestamps) ---
+  int prevIdx = (revHead - 1 + REV_RING) % REV_RING;
+  if (revFill > 0 && now - revTimes[prevIdx] > MOTION_WINDOW_MS) {
+    revFill = 0;
+    revDir  = 0;
+  }
+  int dir = 0;
+  if      (axisRate >  REVERSAL_HYST_DPS) dir =  1;
+  else if (axisRate < -REVERSAL_HYST_DPS) dir = -1;
+  if (dir != 0 && dir != revDir) {
+    revDir = dir;
+    revTimes[revHead] = now;
+    revHead = (revHead + 1) % REV_RING;
+    if (revFill < REV_RING) revFill++;
+  }
+  bool repeated = false;
+  if (revFill >= REVERSALS_FOR_DYNAMIC) {
+    int oldIdx = (revHead - REVERSALS_FOR_DYNAMIC + REV_RING) % REV_RING;
+    if (now - revTimes[oldIdx] <= MOTION_WINDOW_MS) repeated = true;
+  }
+
+  // --- finger pose stability: instantaneous vs a slow EMA baseline ---
+  float drift = 0;
+  for (int i = 0; i < 5; i++) {
+    flexBaseline[i] += 0.02f * (flexNorm[i] - flexBaseline[i]);
+    float d = fabs(flexNorm[i] - flexBaseline[i]);
+    if (d > drift) drift = d;
+  }
+  if (drift < POSE_DRIFT_TOL) {
+    if (poseSteadySinceMs == 0) poseSteadySinceMs = now;
+  } else {
+    poseSteadySinceMs = 0;
+  }
+  poseSteady = (poseSteadySinceMs != 0 && now - poseSteadySinceMs >= POSE_STEADY_MIN_MS);
+
+  dynamicWindow = motionActive && poseSteady && repeated;
+
+  // Announce which kind of gesture the system is currently looking for
+  if (dynamicWindow != dynAnnounced) {
+    dynAnnounced = dynamicWindow;
+    Serial.println(dynamicWindow ? "LOOKING: dynamic gesture"
+                                 : "LOOKING: static gesture");
+  }
+}
+
+// ============================================================
+// Dynamic gesture recognition — runs every loop() in parallel with
+// handleDetect(). Each dynamic gesture is only attempted while a
+// dynamic window is open (see updateMotion). Add new dynamic gestures
+// as extra blocks below.
+// ============================================================
+void handleDynamic() {
+  if (!dynamicWindow) {
+    problemRocks   = 0;
+    problemDir     = 0;
+    problemStartMs = 0;
     return;
   }
 
-  // Expire window
-  if (shakeCount > 0 && millis() - shakeStartMs > SHAKE_WINDOW_MS) {
-    shakeCount   = 0;
-    shakeDir     = 0;
-    shakeStartMs = 0;
-  }
+  unsigned long now = millis();
 
-  // Detect a new crossing in the opposite direction
-  int newDir = 0;
-  if      (gForceAY > SHAKE_HIGH) newDir =  1;
-  else if (gForceAY < SHAKE_LOW)  newDir = -1;
+  // ---- Problem: flat / open hand waved back and forth ----
+  if (gestureFlatHand()) {
+    if (problemStartMs == 0) problemStartMs = now;
 
-  if (newDir != 0 && newDir != shakeDir) {
-    if (shakeCount == 0) shakeStartMs = millis();
-    shakeCount++;
-    shakeDir = newDir;
+    int dir = 0;
+    if      (gForceAY > PROBLEM_AY_HIGH) dir =  1;
+    else if (gForceAY < PROBLEM_AY_LOW)  dir = -1;
 
-    if (shakeCount >= SHAKE_ROCKS_NEEDED) {
-      Serial.println("GESTURE: Problem");
-      printNorm();
-      motorPulse(4);
-      shakeCount   = 0;
-      shakeDir     = 0;
-      shakeStartMs = 0;
+    if (dir != 0 && dir != problemDir) {
+      problemDir = dir;
+      problemRocks++;
+
+      if (problemRocks >= PROBLEM_ROCKS_NEEDED) {
+        announceGesture(G_PROBLEM);
+        motorPulse(4);
+        problemRocks   = 0;
+        problemDir     = 0;
+        problemStartMs = 0;
+      }
     }
+
+    if (problemStartMs != 0 && now - problemStartMs > PROBLEM_WINDOW_MS) {
+      problemRocks   = 0;
+      problemDir     = 0;
+      problemStartMs = 0;
+    }
+  } else {
+    problemRocks   = 0;
+    problemDir     = 0;
+    problemStartMs = 0;
   }
 }
 
@@ -437,6 +714,20 @@ void handleDetect() {
     else if (gestureStop()  ) candidate = G_STOP;
     else if (gesturePoint()  ) candidate = G_POINT;
 
+    // Static gestures need a still hand: while the hand is moving, freeze
+    // static dwell and let handleDynamic() run instead.
+    if (motionActive) {
+      candidate   = G_NONE;
+      holdStartMs  = 0;
+    }
+
+    // Hand is back to neutral (no pose, no hold underway) — announce once
+    // and hold the "no gesture recognized" state until something fires.
+    if (candidate == G_NONE && holdStartMs == 0 && !noGesture && !motionActive) {
+      noGesture = true;
+      Serial.println("GESTURE: None");
+    }
+
     if (candidate != G_NONE) {
       if (holdStartMs == 0) holdStartMs = millis();
       unsigned long heldMs = millis() - holdStartMs;
@@ -450,8 +741,7 @@ void handleDetect() {
 
         if (heldMs >= STOP_DWELL_MS && blinkTaps == 0) {
           // Long hold with no prior tap → Stop
-          Serial.println("GESTURE: Stop");
-          printNorm();
+          announceGesture(G_STOP);
           motorPulse(3);
           latched = true;
           activeGesture = G_STOP;
@@ -461,20 +751,7 @@ void handleDetect() {
       } else {
         // All other gestures fire after standard dwell
         if (heldMs >= DWELL_MS) {
-          switch (candidate) {
-            case G_OK:    Serial.println("GESTURE: OK");    break;
-            case G_GUN:   Serial.println("GESTURE: Gun");   break;
-            case G_UP:    Serial.println("GESTURE: Up");    break;
-            case G_DOWN:  Serial.println("GESTURE: Down");  break;
-            case G_LOOK:  Serial.println("GESTURE: Look");  break;
-            case G_PHOTO: Serial.println("GESTURE: Photo"); break;
-            case G_COOL:  Serial.println("GESTURE: Cool");  break;
-            case G_CUT:   Serial.println("GESTURE: Cut");   break;
-            case G_ROCK:  Serial.println("GESTURE: Rock");  break;
-            case G_POINT:  Serial.println("GESTURE: Point");  break;
-            default: break;
-          }
-          printNorm();
+          announceGesture(candidate);
           motorPulse(3);
           latched = true;
           activeGesture = candidate;
@@ -496,8 +773,7 @@ void handleDetect() {
 
           if (blinkTaps >= 2) {
             // Second tap within window → Blink!
-            Serial.println("GESTURE: Blink");
-            printNorm();
+            announceGesture(G_BLINK);
             motorPulse(5);
             blinkTaps  = 0;
             firstTapMs = 0;
@@ -576,7 +852,7 @@ void logCSVRow() {
   Serial.print(flexNorm[3], 4); Serial.print(",");
   Serial.print(flexNorm[4], 4); Serial.print(",");
   Serial.print(gestureID);   Serial.print(",");
-  Serial.println(softButton ? 1 : 0);
+  Serial.println(button ? 1 : 0);
 }
 
 void startLogging() {
@@ -593,13 +869,21 @@ void startDetecting() {
   activeGesture  = G_NONE;
   holdStartMs    = 0;
   releaseStartMs = 0;
+  noGesture      = true;
+  motionActive   = false;
+  dynamicWindow  = false;
+  dynAnnounced   = false;
+  revFill        = 0;
+  revDir         = 0;
   Serial.println("# Switching to DETECT mode. Gesture recognition active.");
+  Serial.println("GESTURE: None");
+  Serial.println("LOOKING: static gesture");
 }
 
 // ============================================================
 // Serial command processing
 //
-//  c       = calibrate relaxed hand
+//  c       = calibrate relaxed hand (open, flat, back of hand up / palm down)
 //  x       = calibrate fist
 //  d       = start gesture detection mode  (default)
 //  s       = start CSV logging mode
@@ -670,9 +954,9 @@ void handleSerialInput() {
       if (ch == 'n' || ch == 'N') { printNorm(); continue; }
 
       if (ch == 'b' || ch == 'B') {
-        softButton = !softButton;
+        button = !button;
         // Serial.print("# Button ");
-        // Serial.println(softButton ? "ON (1)" : "OFF (0)");
+        // Serial.println(button ? "ON (1)" : "OFF (0)");
         continue;
       }
     }
@@ -686,22 +970,22 @@ void handleSerialInput() {
 // ============================================================
 void setup() {
   Serial.begin(115200);
-  pinMode(button, INPUT_PULLUP);
   pinMode(motorPin, OUTPUT);
   while (!Serial) { ; }
   delay(2000);
 
   Serial.println("# Underwater glove - combined logger + gesture detector");
   Serial.println("# Commands:");
-  Serial.println("#   c       = calibrate relaxed hand");
+  Serial.println("#   c       = calibrate relaxed hand (open, flat, back of hand up / palm down)");
   Serial.println("#   x       = calibrate fist");
   Serial.println("#   d       = start DETECT mode (gesture recognition)");
   Serial.println("#   s       = start LOG mode (CSV output)");
   Serial.println("#   h50     = set log sample rate to 50 Hz");
   Serial.println("#   12      = set gesture label (LOG mode only)");
-  Serial.println("#   n       = print normalized values now");
+  Serial.println("#   n       = print normalized values + motion state now");
   Serial.println("#   b       = toggle button ON/OFF in CSV log");
   Serial.println("# Workflow: c -> x -> d (detect) or s (log)");
+  Serial.println("# DETECT output: GESTURE: <name> (<static|dynamic>) | None, FACING: <dir>, LOOKING: <static|dynamic>");
 }
 
 // ============================================================
@@ -717,6 +1001,7 @@ void loop() {
   readAccelData(MPU_ADDRESS, rawAX, rawAY, rawAZ);
   rawAccelToGForce(rawAX, rawAY, rawAZ, gForceAX, gForceAY, gForceAZ);
   normalizeFlex();
+  updateFacing();
 
   // Status before calibration is done
   if (!minCalibrated || !maxCalibrated) {
@@ -734,8 +1019,9 @@ void loop() {
 
   if (currentMode == MODE_DETECT) {
     updateMotor();
-    updateShake();
-    handleDetect();
+    updateMotion();      // refresh motion / dynamic-window state
+    handleDynamic();     // dynamic gestures  (runs in parallel)
+    handleDetect();      // static gestures
     delay(10);
 
   } else if (currentMode == MODE_LOG) {
